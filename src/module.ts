@@ -1,16 +1,16 @@
-import {
-  defineNuxtModule,
-  useLogger,
-  addPrerenderRoutes,
-} from '@nuxt/kit'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
+import { addPrerenderRoutes, defineNuxtModule, useLogger, createResolver } from '@nuxt/kit'
 import { $fetch } from 'ofetch'
-import { prepareNitroConfig } from './utils'
+import { prepareNitroConfig, minifyFiles } from './utils'
 
 // Module options TypeScript interface definition
 export interface ModuleOptions {
   apiUrl: string | null
   prerender?: boolean
   routePrefix?: string | null
+  minify?: boolean
 }
 
 declare module 'nuxt/schema' {
@@ -33,10 +33,13 @@ export default defineNuxtModule<ModuleOptions>({
     prerender: !nuxt.options.dev && (process.env.NODE_ENV === 'production'),
     apiUrl: null,
     routePrefix: null,
+    minify: false,
   }),
 
   async setup(_options, _nuxt) {
     const logger = useLogger('nuxt-prerender-routes')
+
+    const resolver = createResolver(import.meta.url)
 
     if (!_options.prerender) {
       logger.warn('Prerender is disabled or Nuxt is in dev mode')
@@ -71,6 +74,33 @@ export default defineNuxtModule<ModuleOptions>({
 
           addPrerenderRoutes(routes)
           logger.success('Dynamic routes added to nitro config.')
+
+          if (_options.minify) {
+            _nuxt.hook('nitro:build:public-assets', async () => {
+              if (!_options.prerender) return
+
+              for (const route of routes) {
+                const outputPath = path.join(resolver.resolve('/.output'), 'public', route)
+                const indexHtmlPath = path.join(outputPath, 'index.html')
+                const payloadJsonPath = path.join(outputPath, '_payload.json')
+
+                try {
+                  const indexHtmlContent = fs.readFileSync(indexHtmlPath, 'utf-8')
+                  const minifiedIndexHtml = await minifyFiles(indexHtmlPath, indexHtmlContent)
+                  fs.writeFileSync(indexHtmlPath, minifiedIndexHtml, 'utf-8')
+
+                  const payloadJsonContent = fs.readFileSync(payloadJsonPath, 'utf-8')
+                  const minifiedPayloadJson = await minifyFiles(payloadJsonPath, payloadJsonContent)
+                  fs.writeFileSync(payloadJsonPath, minifiedPayloadJson, 'utf-8')
+
+                  logger.success(`Minified ${indexHtmlPath} and ${payloadJsonPath}`)
+                }
+                catch (error) {
+                  logger.error(`Error minifying files for route ${route}`, error)
+                }
+              }
+            })
+          }
         }
       }
       catch (error) {
